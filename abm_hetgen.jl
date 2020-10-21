@@ -78,6 +78,10 @@ mutable struct RiskInfecting{T<:AbstractFloat}
     INFECTIOUS_I::T
 end
 
+function RiskInfecting(x::AbstractVector{<:AbstractFloat})
+    RiskInfecting(x[1], x[2], x[3], x[4])
+end
+
 # Performance advantage to making immutable?
 mutable struct Jiggle{T<:Union{Integer,AbstractFloat}}
     l::T
@@ -121,12 +125,6 @@ function rand(rng::Random.AbstractRNG, s::Jiggle)
     rand(rng, s, nothing)
 end
 
-
-function RiskInfecting(x::AbstractVector{<:AbstractFloat})
-    RiskInfecting(x[1], x[2], x[3], x[4])
-end
-
-# Make immutable for performance?
 mutable struct Parameters
     first_id::Int64
     scenario::Int64
