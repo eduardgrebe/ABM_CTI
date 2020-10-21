@@ -280,7 +280,6 @@ mutable struct Agent
     risk_infection::Float64
     risk_infecting::RiskInfecting
     infector::Infection
-    #infected_by_me::Union{AbstractVector{Pair{Int64,IntNull}},Nothing}
     infected_by_me::AbstractVector{Infection}
     health_change_iters::Union{HealthChangeIters,Nothing}
     tested::Int
@@ -294,11 +293,7 @@ mutable struct Agent
     recover_before_icu::Bool
     recover_before_death::Bool
 
-    # This is not very readable because arguments to new are positional
     function Agent(p::Parameters, id::Int, rng::Random.AbstractRNG)
-        # Nathan's logic. Is this right? If initial_infections == 0 then do
-        # the draws and if not 0 then always set to SUSCEPTIBLE???
-        # Maybe infections are seeded outside constructor if > 0?
         if p.initial_infections == 0
             stage = 0
             for d in p.health
@@ -311,12 +306,10 @@ mutable struct Agent
         else
             health_ = SUSCEPTIBLE
         end
-
-        # Default values
         recover_before_hospital_ = true
         recover_before_icu_ = true
         recover_before_death_ = true
-        # This apprars to be Nathan's method using the "()" operator defined on 
+        # This appears to be Nathan's method using the "()" operator defined on 
         # a Jiggle, which returns l, but if the user specified a range instead 
         # of just a lower value is this the desired behaviour? See line 468
         asymptomatic_ = rand_0_1(rng) < p.asymptomatic.l
@@ -329,7 +322,6 @@ mutable struct Agent
                 end
             end
         end
-
         new(
             id,
             rand(rng, Distributions.Exponential(p.risk_infection)),
@@ -373,8 +365,8 @@ mutable struct Simulation
     results::AbstractVector{Dict{String,Float64}}
     # Without some black magic we can't initiate the agents inside this 
     # constructor because the init_agents function calls infect! which
-    # in turn needs to modify total_infected inside the Simulation object
-    # there's probably a way of doing this, see: 
+    # in turn modifies the total_infected field of the Simulation struct
+    # there's probably an elegant way of doing this, see: 
     # https://docs.julialang.org/en/v1/manual/constructors/#Incomplete-Initialization
     function Simulation(p::Parameters)
         new(
@@ -398,14 +390,15 @@ mutable struct Simulation
     end
 end
 
-# rewrote this bit to use multiple dispatch rather than if from
+# multiple dispatch rather than if from
 function infect!(s::Simulation, from::Agent, to::Agent)
     push!(from.infected_by_me, Infection(to.id, s.iteration))
     to.infector = Infection(from.id, s.iteration)
     s.total_infected += 1
 end
 
-# Nathan uses the constant INFECTED_BEFORE = -1 from from_id
+# Nathan uses the constant INFECTED_BEFORE = -1 for from_id
+# does this become important later?
 function infect!(s::Simulation, to::Agent)
     to.infector = Infection(nothing, s.iteration)
     s.total_infected += 1
@@ -413,7 +406,9 @@ end
 
 function isolate!(s::Simulation, a::Agent)
     a.isolation_iter === nothing && s.num_agents_isolated += 1
+    # again .l is equivalent to () operator on Jiggle in C++ code
     a.isolation_iter = s.iteration + s.parameters.isolation_period.l
+    # I don't fully understand this bit
     a.isolated = rand_0_1(s.rng) * 
         (s.parameters.max_isolation - s.parameters.min_isolation) +
         s.parameters.min_isolation
@@ -421,22 +416,20 @@ function isolate!(s::Simulation, a::Agent)
 end
 
 function deisolate!(s::Simulation, a::Agent)
-    # I don't understand this. Why -11?
+    # I don't understand this. Why the -11 constant?
     a.isolation_iter = - (a.isolation_iter + ISOLATED_BEFORE)
     a.isolated = 0.0
     s.num_deisolated += 1
 end
 
 function init_agents!(s::Simulation; force=false)
-    # We start with 1 because Julia is 1-indexed
-    # change to first_id? what is the purpose of that field if not this?
     if !force && length(s.agents) != 0
         error("Simulation object already contains agents. Use force=true to override")
     elseif force
         s.agents = Vector{Agent}()
     end
+    # Start with 1 because Julia is 1-indexed - could it cause problems?
     for i = 1:s.parameters.num_agents
-        #is this inefficient?
         agent = Agent(s.parameters, i, s.rng)
         if agent.health > SUSCEPTIBLE && agent.health < DEAD
             infect!(s, agent)
@@ -498,7 +491,10 @@ function report(s::Simulation; forced = false)
     end
 end
 
-# Test code
+
+
+
+###*** Test code ***###
 
 par = default_parameters
 s = Simulation(par)
