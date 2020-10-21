@@ -263,20 +263,17 @@ const default_parameters = Parameters(
 
 function set_parameters(parameters; kwargs...)
     p = deepcopy(parameters)
-    kwargs_dict = Dict(kwargs)
-    for (key, value) in kwargs_dict
+    for (key, value) in Dict(kwargs)
         setfield!(p, key, value)
     end
     return p
 end
 
 function set_parameters!(parameters; kwargs...)
-    kwargs_dict = Dict(kwargs)
-    for (key, value) in kwargs_dict
+    for (key, value) in Dict(kwargs)
         setfield!(parameters, key, value)
     end
 end
-
 
 mutable struct Agent
     id::Int64
