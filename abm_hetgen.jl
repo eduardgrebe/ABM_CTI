@@ -2,7 +2,8 @@ using Random
 using Distributions
 import Base: rand
 using IterTools
-using Match
+using DataStructures
+using Base.Threads
 
 const ISOLATED_BEFORE = -11
 const INFECTED_BEFORE = -1
@@ -71,21 +72,58 @@ mutable struct HealthChangeIters
     iteration::AbstractVector{Int64}
 end
 
-mutable struct RiskInfecting{T<:AbstractFloat}
-    INFECTIOUS_A::T
-    INFECTIOUS_S::T
-    INFECTIOUS_H::T
-    INFECTIOUS_I::T
-end
-
-function RiskInfecting(x::AbstractVector{<:AbstractFloat})
-    RiskInfecting(x[1], x[2], x[3], x[4])
+function HealthProbs(x::AbstractVector{<:AbstractFloat})
+    if length(x) == 4
+        return OrderedDict{Health,Float64}([
+            SUSCEPTIBLE  => 0.0,
+            EXPOSED      => 0.0,
+            INFECTIOUS_A => x[1], 
+            INFECTIOUS_S => x[2], 
+            INFECTIOUS_H => x[3], 
+            INFECTIOUS_I => x[4],
+            RECOVERED    => 0.0,
+            DEAD         => 0.0
+            ])
+    elseif length(x) == 8
+        return OrderedDict{Health,Float64}([
+            SUSCEPTIBLE  => x[1],
+            EXPOSED      => x[2],
+            INFECTIOUS_A => x[3], 
+            INFECTIOUS_S => x[4], 
+            INFECTIOUS_H => x[5], 
+            INFECTIOUS_I => x[6],
+            RECOVERED    => x[7],
+            DEAD         => x[8]
+            ])
+    else
+        error("Only 4 or 8 probabilities accepted")
+    end
 end
 
 # Performance advantage to making immutable?
+# Currently the default value is l even when a range is specified
+# the string representation is the range, irrespective of whether the value
+# has been set to a random number or 
 mutable struct Jiggle{T<:Union{Integer,AbstractFloat}}
     l::T
     u::Union{T,Nothing}
+    r::String # string representation
+    v::Union{T,Nothing} # current value ; here I diverge from Nathan's approach
+    function Jiggle(l)
+        new{typeof(l)}(l, nothing, string(l), l) # default value = l!
+    end
+    function Jiggle(l,u)
+        if u === nothing
+            Jiggle(l)
+        else
+            new{typeof(l)}(
+                l,
+                u, 
+                "[" * string(l) * ":" * string(u) * "]", 
+                l # default value = l!
+                )
+        end
+    end
 end
 
 # Random draw methods for Type Jiggle, optional rng, optional n
@@ -125,6 +163,14 @@ function rand(rng::Random.AbstractRNG, s::Jiggle)
     rand(rng, s, nothing)
 end
 
+function set!(rng::Random.AbstractRNG, s::Jiggle)
+    s.v = rand(rng, s)
+end
+
+function set!(s::Jiggle)
+    s.v = rand(s)
+end
+
 mutable struct Parameters
     first_id::Int64
     scenario::Int64
@@ -143,9 +189,9 @@ mutable struct Parameters
     verbose::Bool
     health::AbstractVector{Float64}
     risk_infection::Float64
-    risk_infecting::RiskInfecting
-    risk_positive::AbstractVector{Float64}
-    prob_test::AbstractVector{Float64}
+    risk_infecting::OrderedDict{Health,Float64}
+    risk_positive::OrderedDict{Health,Float64}
+    prob_test::OrderedDict{Health,Float64}
     min_isolation::Float64
     max_isolation::Float64
     min_before_isolate::Int64
@@ -202,8 +248,8 @@ const default_parameters = Parameters(
     true,
     [0.999, 1.0],
     0.1,
-    RiskInfecting(0.05, 0.1, 0.1, 0.1),
-    [
+    HealthProbs([0.0, 0.0, 0.05, 0.1, 0.1, 0.1, 0.0, 0.0]),
+    HealthProbs([
         POS_SUSCEPTIBLE,
         POS_EXPOSED,
         POS_INFECTIOUS_A,
@@ -212,8 +258,8 @@ const default_parameters = Parameters(
         POS_INFECTIOUS_I,
         POS_RECOVERED,
         POS_DEAD,
-    ],
-    [
+    ]),
+    HealthProbs([
         TEST_SUSCEPTIBLE,
         TEST_EXPOSED,
         TEST_INFECTIOUS_A,
@@ -222,7 +268,7 @@ const default_parameters = Parameters(
         TEST_INFECTIOUS_I,
         TEST_RECOVERED,
         TEST_DEAD,
-    ],
+    ]),
     0.0,
     1.0,
     0,
@@ -278,7 +324,7 @@ end
 mutable struct Agent
     id::Int64
     risk_infection::Float64
-    risk_infecting::RiskInfecting
+    risk_infecting::OrderedDict{Health,Float64}
     infector::Infection
     infected_by_me::AbstractVector{Infection}
     health_change_iters::Union{HealthChangeIters,Nothing}
@@ -294,6 +340,12 @@ mutable struct Agent
     recover_before_death::Bool
 
     function Agent(p::Parameters, id::Int, rng::Random.AbstractRNG)
+        risk_infecting_ = Vector{Float64}()
+        for (h, r) in p.risk_infecting
+            if h > EXPOSED && h < RECOVERED
+                append!(risk_infecting_, rand(rng, Distributions.Exponential(r)))
+            end
+        end
         if p.initial_infections == 0
             stage = 0
             for d in p.health
@@ -312,7 +364,7 @@ mutable struct Agent
         # This appears to be Nathan's method using the "()" operator defined on 
         # a Jiggle, which returns l, but if the user specified a range instead 
         # of just a lower value is this the desired behaviour? See line 468
-        asymptomatic_ = rand_0_1(rng) < p.asymptomatic.l
+        asymptomatic_ = rand_0_1(rng) < p.asymptomatic.v
         if !asymptomatic_
             recover_before_hospital_ = rand_0_1(rng) < p.recover_before_hospital
             if !recover_before_hospital_
@@ -325,10 +377,7 @@ mutable struct Agent
         new(
             id,
             rand(rng, Distributions.Exponential(p.risk_infection)),
-            RiskInfecting([
-                rand(rng, Distributions.Exponential(r))
-                for r in fieldvalues(p.risk_infecting)
-            ]),
+            HealthProbs(risk_infecting_),
             Infection(nothing,nothing),
             Vector{Infection}(),
             nothing,
@@ -405,9 +454,11 @@ function infect!(s::Simulation, to::Agent)
 end
 
 function isolate!(s::Simulation, a::Agent)
-    a.isolation_iter === nothing && s.num_agents_isolated += 1
-    # again .l is equivalent to () operator on Jiggle in C++ code
-    a.isolation_iter = s.iteration + s.parameters.isolation_period.l
+    if a.isolation_iter === nothing
+        s.num_agents_isolated += 1
+    end
+    # again .v is equivalent to () operator on Jiggle in C++ code
+    a.isolation_iter = s.iteration + s.parameters.isolation_period.v
     # I don't fully understand this bit
     a.isolated = rand_0_1(s.rng) * 
         (s.parameters.max_isolation - s.parameters.min_isolation) +
@@ -460,45 +511,240 @@ function stats!(s::Simulation; forced = false)
     end
 end
 
-# Where do we output the report?
-function report(s::Simulation; forced = false)
-    if forced || s.iteration % s.parameters.report_frequency == 0
-        susceptible = 0
-        exposed = 0
-        infectious_a = 0
-        infectious_s = 0
-        infectious_h = 0
-        infectious_i = 0
-        recovered = 0
-        dead = 0
-        for a in s.agents
-            @match a.health begin
-                SUSCEPTIBLE  => susceptible += 1
-                EXPOSED      => exposed += 1
-                INFECTIOUS_A => infectious_a += 1
-                INFECTIOUS_S => infectious_s += 1
-                INFECTIOUS_H => infectious_h += 1
-                INFECTIOUS_I => infectious_i += 1
-                RECOVERED    => recovered += 1
-                DEAD         => dead += 1
-             end
+function event_infect_assort!(s::Simulation)
+    neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
+    n = length(s.agents)
+    infected = Vector{Union{Nothing, Int64}}(nothing, n)
+    indices = collect(1:n)
+    shuffle!(s.rng, indices) # check with Nathan - I don't understand line 633
+    for i in indices
+        if s.agents[i].health > EXPOSED && s.agents[i].health < RECOVERED
+            from = max(1, i - neighbours)
+            to = min(i + neighbours, n) # i + 1 + neighbors on line 639
+            for j in from:to
+                if sagents[j].health > SUSCEPTIBLE
+                    continue
+                end
+                risk = min(1.0 - s.agents[i].isolated, 1.0 - s.agents[j].isolated) *
+                    ((s.agents[i].risk_infecting[s.agents[i].health] + s.agents[j].risk_infection) /
+                    2.0)
+                if rand_0_1(s.rng) < risk
+                    infected[j] = i
+                end
+            end
         end
-        active = exposed + infectious_a + infectious_s + infectious_h + 
-            infectious_i
-        
-        # Write out the report (use CSV.jl? write plain text?)
-
+    end
+    for i in 1:n
+        if infected[i] !== nothing
+            # assert(agents_[infected[i]]->health_ > EXPOSED && 
+            #     agents_[infected[i]]->health_ < RECOVERED);
+            # assert(agents_[i]->health_ == SUSCEPTIBLE);
+            # assert(std::abs(i - infected[i]) <= 
+            #     std::round((double)parameters_.k_assort() / 2));
+            s.agents[i].health = EXPOSED
+            infect!(s, s.agents[infected[i]], s.agents[i])
+        end
     end
 end
 
+function event_test!(s::Simulation)
+    for a in s.agents
+        if a.test_res_iter === nothing && a.test_result == NEGATIVE && 
+                rand_0_1(s.rng) < s.parameters.prob_test[a.health]
+            i = rand(s.rng, Distributions.Poisson(s.parameters.mean_test.v))
+            a.test_res_iter = s.iteration + max(i, s.parameters.min_test.v)
+            if rand_0_1(s.rng) < s.parameters.risk_positive[a.health]
+                a.test_result = POSITIVE
+                s.num_positives += 1
+            else
+                a.test_result = NEGATIVE
+            end
+            s.num_tests += 1
+            if a.tested == 0
+                s.num_agents_tested += 1
+            end
+            a.tested += 1
+        end
+    end
+end
 
+function event_isolate!(s::Simulation)
+    if s.parameters.min_before_isolate > 0
+        infections = 0
+        for a in  s.agents
+            if a.health > INFECTIOUS_A
+                infections += 1
+            end
+        end
+        if infections < s.parameters.min_before_isolate
+            return
+        else
+            s.parameters.min_before_isolate = 0
+        end
+    end
+    for a in s.agents
+        if a.test_res_iter == s.iteration &&
+                a.test_result == POSITIVE &&
+                a.isolated == 0.0
+            isolate!(s, a)
+        end
+    end
+end
 
+function event_deisolate!(s::Simulation)
+    for a in s.agents
+        if a.isolation_iter == s.iteration
+            deisolate!(s, a)
+        end
+    end
+end
+
+function event_trace!(s::Simulation)
+    if s.parameters.min_before_trace > 0
+        infections = 0
+        for a in  s.agents
+            if a.health > INFECTIOUS_A
+                infections += 1
+            end
+        end
+    end
+    s.parameters.min_before_trace = 0
+    for a in s.agents
+        if a.test_res_iter == s.iteration &&
+                a.test_result == POSITIVE
+            neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
+            from = max(1, i - neighbours)
+            to = min(i + neighbours, n) # i + 1 + neighbors on line 639
+            for i in from:to
+                if i != a.id && s.agents[i].isolated == 0.0 &&
+                        s.agents[i].health < RECOVERED
+                    if rand_0_1(s.rng) < s.parameters.trace_effective
+                        s.num_traced += 1
+                        isolate!(s, s.agents[i])
+                    end
+                end
+            end
+        end
+    end
+end
+
+function event_result!(s::Simulation)
+    for a in s.agents
+        if a.test_res_iter == s.iteration
+            a.test_res_iter = nothing
+        end
+    end
+end
+
+function advance_infection!(s::Simulation, a::Agent, stage_from::Int64, stage_to)
+    # not written yet
+end
+
+function report(s::Simulation, io::IO=IOContext(stdout, :compact => false); forced = false)
+    if forced || s.iteration % s.parameters.report_frequency == 0
+        # array comprehension appears to be slightly faster than looping over
+        # all agents once and updating counts with if else statements
+        susceptible = sum([a.health == SUSCEPTIBLE ? 1 : 0 for a in s.agents])
+        exposed = sum([a.health == EXPOSED ? 1 : 0 for a in s.agents])
+        infectious_a = sum([a.health == INFECTIOUS_A ? 1 : 0 for a in s.agents])
+        infectious_s = sum([a.health == INFECTIOUS_S ? 1 : 0 for a in s.agents])
+        infectious_h = sum([a.health == INFECTIOUS_H ? 1 : 0 for a in s.agents])
+        infectious_i = sum([a.health == INFECTIOUS_I ? 1 : 0 for a in s.agents])
+        recovered = sum([a.health == RECOVERED ? 1 : 0 for a in s.agents])
+        dead = sum([a.health == DEAD ? 1 : 0 for a in s.agents])
+        active = exposed + infectious_a + infectious_s + infectious_h + 
+            infectious_i
+        
+        # NB! check my .l versus jiggle() in Nathan's code
+        lock(io)
+        println(
+            io,
+            string(
+                s.parameters.id, ",",
+                s.parameters.scenario, ",",
+                s.parameters.jiggle, ",",
+                s.parameters.run, ",",
+                s.iteration, ",",
+                susceptible, ",",
+                exposed, ",",
+                infectious_a, ",",
+                infectious_s, ",",
+                infectious_h, ",",
+                infectious_i, ",",
+                recovered, ",",
+                dead, ",",
+                active, ",",
+                s.total_infected, ",",
+                s.num_agents_isolated, ",",
+                s.num_isolated, ",",
+                s.num_deisolated, ",",
+                s.num_traced, ",",
+                s.num_agents_tested, ",",
+                s.num_tests, ",",
+                s.num_positives, ",",
+                s.parameters.k_assort.v, ",",
+                s.parameters.prob_test_infectious_s.v, ",",
+                s.parameters.mean_test.v, ",",
+                s.parameters.min_test.v, ",",
+                s.parameters.isolation_period.v, ",",
+                s.parameters.exposed_risk.v, ",",
+                s.parameters.asymptomatic.v, ",",
+                s.parameters.infectious_a_risk.v, ",",
+                s.parameters.infectious_s_risk.v, ",",
+                s.parameters.min_isolation, ",",
+                s.parameters.max_isolation, ",",
+                s.parameters.trace_effective
+            )
+            )
+        unlock(io)
+    end
+end
+
+function write_csv_header(s::Simulation, io::IO=IOContext(stdout, :compact => false))
+    # This lock may be unnecessary
+    lock(io)
+    println(
+        io,
+        "id,scenario,jiggle,run,iteration,susceptible,exposed," * 
+            "asymptomatic,symptomatic,hospital,icu,recover,dead,active," * 
+            "total_infected,agents_isolated,isolated,deisolated,traced," * 
+            "agents_tested,tested,positives,k,test_infectious_s,mean_test," *
+            "min_test,isolation_period,exposed_risk,asymp_prob,inf_a_risk," *
+            "inf_s_risk,min_isolation,max_isolation,trace_effective"
+        )
+    unlock(io)
+end
+
+function set_jiggles!(rng::Random.AbstractRNG, p::Parameters)
+    set!(rng, p.exposed_risk)
+    set!(rng, p.asymptomatic)
+    set!(rng, p.infectious_a_risk)
+    set!(rng, p.k_assort)
+    set!(rng, p.prob_test_susceptible)
+    set!(rng, p.prob_test_exposed)
+    set!(rng, p.prob_test_infectious_a)
+    set!(rng, p.prob_test_infectious_s)
+    set!(rng, p.prob_test_infectious_h)
+    set!(rng, p.prob_test_infectious_i)
+    set!(rng, p.prob_test_recovered)
+    set!(rng, p.prob_test_dead)
+    set!(rng, p.mean_test)
+    set!(rng, p.min_test)
+    set!(rng, p.isolation_period)
+    set!(rng, p.infectious_s_risk)
+end
+
+function set_jiggles!(p::Parameters)
+    set_jiggles!(Random.GLOBAL_RNG, p)
+end
 
 ###*** Test code ***###
 
-par = default_parameters
+par = set_parameters(default_parameters, initial_infections=107)
 s = Simulation(par)
 init_agents!(s)
+s.iteration = 1
+
 infections = 0
 for a in s.agents
     infections += (a.health > SUSCEPTIBLE && a.health < RECOVERED)
