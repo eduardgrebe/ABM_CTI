@@ -59,6 +59,7 @@ FloatNull = Union{Float64,Nothing}
     DEAD = 7
 end
 
+## Why IntNull ? Where's the one for Floats?
 # Convenience function
 function rand_0_1(rng::Random.AbstractRNG, n::IntNull)
     d = Distributions.Uniform(0.0, 1.0)
@@ -495,9 +496,7 @@ function isolate!(s::Simulation, a::Agent)
     if a.isolation_iter === nothing
         s.num_agents_isolated += 1
     end
-    # again .v is equivalent to () operator on Jiggle in C++ code
     a.isolation_iter = s.iteration + s.parameters.isolation_period.v
-    # I don't fully understand this bit
     a.isolated = rand_0_1(s.rng) * 
         (s.parameters.max_isolation - s.parameters.min_isolation) +
         s.parameters.min_isolation
@@ -617,7 +616,7 @@ function event_infect_assort!(s::Simulation)
     n = length(s.agents)
     infected = Vector{Union{Nothing, Int64}}(nothing, n)
     indices = collect(1:n)
-    shuffle!(s.rng, indices) # check with Nathan - I don't understand line 633
+    shuffle!(s.rng, indices)
     for i in indices
         if s.agents[i].health > EXPOSED && s.agents[i].health < RECOVERED
             from = max(1, i - neighbours)
@@ -716,8 +715,6 @@ function event_trace!(s::Simulation)
                 a.test_result == POSITIVE
             neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
             from = max(1, a.id - neighbours)
-            # i + 1 + neighbors on line 639 WHy? This gets half k_assort on
-            # either side
             to = min(a.id + neighbours, length(s.agents))
             for i in from:to
                 if i != a.id && s.agents[i].isolated == 0.0 &&
@@ -759,35 +756,35 @@ end
 function event_exposed!(s::Simulation)
     for a in s.agents
         advance_infection!(s.rng, a, EXPOSED, INFECTIOUS_A, 
-                           s.parameters.exposed_risk.v, false, s.iteration)
+                        s.parameters.exposed_risk.v, false, s.iteration)
     end
 end
 
 function event_infectious_a!(s::Simulation)
     for a in s.agents
         advance_infection!(s.rng, a, INFECTIOUS_A, INFECTIOUS_S, 
-                           s.parameters.exposed_risk.v, false, s.iteration)
+                        s.parameters.exposed_risk.v, a.asymptomatic, s.iteration)
     end
 end
 
 function event_infectious_s!(s::Simulation)
     for a in s.agents
         advance_infection!(s.rng, a, INFECTIOUS_S, INFECTIOUS_H, 
-                           s.parameters.exposed_risk.v, false, s.iteration)
+                        s.parameters.exposed_risk.v, a.recover_before_hospital, s.iteration)
     end
 end
 
 function event_infectious_h!(s::Simulation)
     for a in s.agents
         advance_infection!(s.rng, a, INFECTIOUS_H, INFECTIOUS_I, 
-                           s.parameters.exposed_risk.v, false, s.iteration)
+                        s.parameters.exposed_risk.v, a.recover_before_icu, s.iteration)
     end
 end
 
 function event_infectious_i!(s::Simulation)
     for a in s.agents
         advance_infection!(s.rng, a, INFECTIOUS_I, DEAD, 
-                           s.parameters.exposed_risk.v, false, s.iteration)
+                        s.parameters.exposed_risk.v, a.recover_before_death, s.iteration)
     end
 end
 
@@ -815,16 +812,12 @@ function iterate!(s::Simulation)
         end
         event_exposed!(s)
         event_infectious_a!(s)
-        # why are recovery and death not events? when do these transitions 
-        # happen?
     end
     stats!(s, forced=true)
     report(s, forced=true)
 end
 
 function simulate!(s::Simulation)
-    # if we use forced=true in the init_agents!() call then you can simulate 
-    # same object again, but counts may be wrong
     init_agents!(s) 
     s.iteration = 0
     iterate!(s)
@@ -928,7 +921,6 @@ function run_simulations(parms::AbstractVector{Parameters})
                     local_seed = global_seed + Threads.threadid()
                 end
                 local_parms = deepcopy(parms[k])
-                #lock(parms[k])
                 get_jiggles!(p, local_parms)
                 local_parms.jiggle = i
                 local_parms.run = j
@@ -939,7 +931,6 @@ function run_simulations(parms::AbstractVector{Parameters})
                 local_parms.id = id
                 local_parms.seed = local_seed
                 s = Simulation(local_parms)
-                #unlock(parms[k])
                 simulate!(s)
             end
         end
@@ -950,5 +941,4 @@ function run_simulations(parms::Parameters)
     run_simulations([parms])
 end
 
-    
 end
