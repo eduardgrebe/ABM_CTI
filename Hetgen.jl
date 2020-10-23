@@ -59,8 +59,6 @@ module Hetgen
         DEAD = 7
     end
 
-    ## Why IntNull ? Where's the one for Floats?
-    # Convenience function
     function rand_0_1(rng::Random.AbstractRNG, n::IntNull)
         d = Distributions.Uniform(0.0, 1.0)
         r = n === nothing ? rand(rng, d) : rand(rng, d, n)
