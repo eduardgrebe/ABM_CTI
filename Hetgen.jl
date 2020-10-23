@@ -1,6 +1,22 @@
+# Copyright (C) 2020 Eduard Grebe and Nathan Geffen.
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.  This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+# details.  You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+module Hetgen
+
+export default_parameters, set_parameters!, set_parameters, 
+        run_one_sim!, run_simulations, write_csv_header, Jiggle
+
 using Random
 using Distributions
-import Base: rand
+import Base: rand, append!
 using IterTools
 using DataStructures
 using Base.Threads
@@ -67,9 +83,23 @@ mutable struct Infection
     iteration::IntNull
 end
 
-mutable struct HealthChangeIters
-    stage::Health
-    iteration::AbstractVector{Int64}
+HealthChangeIters = OrderedDict{Health,AbstractVector{Int64}}
+
+function HealthChangeItersEmpty()
+    return OrderedDict{Health,AbstractVector{Int64}}([
+        SUSCEPTIBLE  => Vector{Int64}(),
+        EXPOSED      => Vector{Int64}(),
+        INFECTIOUS_A => Vector{Int64}(),
+        INFECTIOUS_S => Vector{Int64}(),
+        INFECTIOUS_H => Vector{Int64}(),
+        INFECTIOUS_I => Vector{Int64}(),
+        RECOVERED    => Vector{Int64}(),
+        DEAD         => Vector{Int64}()
+    ])
+end
+
+function append!(s::HealthChangeIters, h::Health, i::Integer)
+    append!(s[h], i)
 end
 
 function HealthProbs(x::AbstractVector{<:AbstractFloat})
@@ -169,6 +199,10 @@ end
 
 function set!(s::Jiggle)
     s.v = rand(s)
+end
+
+function get!(from::Jiggle, to::Jiggle)
+    to.v = from.v
 end
 
 mutable struct Parameters
@@ -327,7 +361,7 @@ mutable struct Agent
     risk_infecting::OrderedDict{Health,Float64}
     infector::Infection
     infected_by_me::AbstractVector{Infection}
-    health_change_iters::Union{HealthChangeIters,Nothing}
+    health_change_iters::HealthChangeIters
     tested::Int
     test_result::TestResult
     test_res_iter::IntNull
@@ -380,7 +414,7 @@ mutable struct Agent
             HealthProbs(risk_infecting_),
             Infection(nothing,nothing),
             Vector{Infection}(),
-            nothing,
+            HealthChangeItersEmpty(),
             0,
             NEGATIVE,
             nothing,
@@ -396,6 +430,7 @@ mutable struct Agent
 end
 
 mutable struct Simulation
+    thread_id::Int64
     rng::Random.AbstractRNG
     parameters::Parameters
     agents::AbstractVector{Agent}
@@ -419,6 +454,7 @@ mutable struct Simulation
     # https://docs.julialang.org/en/v1/manual/constructors/#Incomplete-Initialization
     function Simulation(p::Parameters)
         new(
+            Threads.threadid(),
             MersenneTwister(p.seed),
             p,
             Vector{Agent}(),
@@ -473,10 +509,10 @@ function deisolate!(s::Simulation, a::Agent)
     s.num_deisolated += 1
 end
 
-function init_agents!(s::Simulation; force=false)
-    if !force && length(s.agents) != 0
-        error("Simulation object already contains agents. Use force=true to override")
-    elseif force
+function init_agents!(s::Simulation; forced=false)
+    if !forced && length(s.agents) != 0
+        error("Simulation object already contains agents. Use forced=true to override")
+    elseif forced
         s.agents = Vector{Agent}()
     end
     # Start with 1 because Julia is 1-indexed - could it cause problems?
@@ -511,6 +547,66 @@ function stats!(s::Simulation; forced = false)
     end
 end
 
+function report(s::Simulation, io::IO=IOContext(stdout, :compact => false); forced = false)
+    if forced || s.iteration % s.parameters.report_frequency == 0
+        # array comprehension appears to be slightly faster than looping over
+        # all agents once and updating counts with if else statements
+        susceptible = sum([a.health == SUSCEPTIBLE ? 1 : 0 for a in s.agents])
+        exposed = sum([a.health == EXPOSED ? 1 : 0 for a in s.agents])
+        infectious_a = sum([a.health == INFECTIOUS_A ? 1 : 0 for a in s.agents])
+        infectious_s = sum([a.health == INFECTIOUS_S ? 1 : 0 for a in s.agents])
+        infectious_h = sum([a.health == INFECTIOUS_H ? 1 : 0 for a in s.agents])
+        infectious_i = sum([a.health == INFECTIOUS_I ? 1 : 0 for a in s.agents])
+        recovered = sum([a.health == RECOVERED ? 1 : 0 for a in s.agents])
+        dead = sum([a.health == DEAD ? 1 : 0 for a in s.agents])
+        active = exposed + infectious_a + infectious_s + infectious_h + 
+            infectious_i
+        
+        lock(io)
+        println(
+            io,
+            string(
+                s.thread_id, ",",
+                s.parameters.id, ",",
+                s.parameters.scenario, ",",
+                s.parameters.jiggle, ",",
+                s.parameters.run, ",",
+                s.iteration, ",",
+                susceptible, ",",
+                exposed, ",",
+                infectious_a, ",",
+                infectious_s, ",",
+                infectious_h, ",",
+                infectious_i, ",",
+                recovered, ",",
+                dead, ",",
+                active, ",",
+                s.total_infected, ",",
+                s.num_agents_isolated, ",",
+                s.num_isolated, ",",
+                s.num_deisolated, ",",
+                s.num_traced, ",",
+                s.num_agents_tested, ",",
+                s.num_tests, ",",
+                s.num_positives, ",",
+                s.parameters.k_assort.v, ",",
+                s.parameters.prob_test_infectious_s.v, ",",
+                s.parameters.mean_test.v, ",",
+                s.parameters.min_test.v, ",",
+                s.parameters.isolation_period.v, ",",
+                s.parameters.exposed_risk.v, ",",
+                s.parameters.asymptomatic.v, ",",
+                s.parameters.infectious_a_risk.v, ",",
+                s.parameters.infectious_s_risk.v, ",",
+                s.parameters.min_isolation, ",",
+                s.parameters.max_isolation, ",",
+                s.parameters.trace_effective
+            )
+            )
+        unlock(io)
+    end
+end
+
 function event_infect_assort!(s::Simulation)
     neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
     n = length(s.agents)
@@ -522,7 +618,7 @@ function event_infect_assort!(s::Simulation)
             from = max(1, i - neighbours)
             to = min(i + neighbours, n) # i + 1 + neighbors on line 639
             for j in from:to
-                if sagents[j].health > SUSCEPTIBLE
+                if s.agents[j].health > SUSCEPTIBLE
                     continue
                 end
                 risk = min(1.0 - s.agents[i].isolated, 1.0 - s.agents[j].isolated) *
@@ -613,8 +709,8 @@ function event_trace!(s::Simulation)
         if a.test_res_iter == s.iteration &&
                 a.test_result == POSITIVE
             neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
-            from = max(1, i - neighbours)
-            to = min(i + neighbours, n) # i + 1 + neighbors on line 639
+            from = max(1, a.id - neighbours)
+            to = min(a.id + neighbours, length(s.agents)) # i + 1 + neighbors on line 639
             for i in from:to
                 if i != a.id && s.agents[i].isolated == 0.0 &&
                         s.agents[i].health < RECOVERED
@@ -636,76 +732,100 @@ function event_result!(s::Simulation)
     end
 end
 
-function advance_infection!(s::Simulation, a::Agent, stage_from::Int64, stage_to)
-    # not written yet
-end
-
-function report(s::Simulation, io::IO=IOContext(stdout, :compact => false); forced = false)
-    if forced || s.iteration % s.parameters.report_frequency == 0
-        # array comprehension appears to be slightly faster than looping over
-        # all agents once and updating counts with if else statements
-        susceptible = sum([a.health == SUSCEPTIBLE ? 1 : 0 for a in s.agents])
-        exposed = sum([a.health == EXPOSED ? 1 : 0 for a in s.agents])
-        infectious_a = sum([a.health == INFECTIOUS_A ? 1 : 0 for a in s.agents])
-        infectious_s = sum([a.health == INFECTIOUS_S ? 1 : 0 for a in s.agents])
-        infectious_h = sum([a.health == INFECTIOUS_H ? 1 : 0 for a in s.agents])
-        infectious_i = sum([a.health == INFECTIOUS_I ? 1 : 0 for a in s.agents])
-        recovered = sum([a.health == RECOVERED ? 1 : 0 for a in s.agents])
-        dead = sum([a.health == DEAD ? 1 : 0 for a in s.agents])
-        active = exposed + infectious_a + infectious_s + infectious_h + 
-            infectious_i
-        
-        # NB! check my .l versus jiggle() in Nathan's code
-        lock(io)
-        println(
-            io,
-            string(
-                s.parameters.id, ",",
-                s.parameters.scenario, ",",
-                s.parameters.jiggle, ",",
-                s.parameters.run, ",",
-                s.iteration, ",",
-                susceptible, ",",
-                exposed, ",",
-                infectious_a, ",",
-                infectious_s, ",",
-                infectious_h, ",",
-                infectious_i, ",",
-                recovered, ",",
-                dead, ",",
-                active, ",",
-                s.total_infected, ",",
-                s.num_agents_isolated, ",",
-                s.num_isolated, ",",
-                s.num_deisolated, ",",
-                s.num_traced, ",",
-                s.num_agents_tested, ",",
-                s.num_tests, ",",
-                s.num_positives, ",",
-                s.parameters.k_assort.v, ",",
-                s.parameters.prob_test_infectious_s.v, ",",
-                s.parameters.mean_test.v, ",",
-                s.parameters.min_test.v, ",",
-                s.parameters.isolation_period.v, ",",
-                s.parameters.exposed_risk.v, ",",
-                s.parameters.asymptomatic.v, ",",
-                s.parameters.infectious_a_risk.v, ",",
-                s.parameters.infectious_s_risk.v, ",",
-                s.parameters.min_isolation, ",",
-                s.parameters.max_isolation, ",",
-                s.parameters.trace_effective
-            )
-            )
-        unlock(io)
+function advance_infection!(rng::Random.AbstractRNG, a::Agent, stage_from::Health, stage_to::Health, 
+                            prob::Float64, recover::Bool, iteration::Integer)
+    if a.health == stage_from
+        if rand_0_1(rng) < prob
+            if recover
+                a.health = RECOVERED
+                append!(a.health_change_iters, RECOVERED, iteration)
+            else
+                a.health = stage_to
+                append!(a.health_change_iters, stage_to, iteration)
+            end
+        end
     end
 end
 
-function write_csv_header(s::Simulation, io::IO=IOContext(stdout, :compact => false))
+function event_exposed!(s::Simulation)
+    for a in s.agents
+        advance_infection!(s.rng, a, EXPOSED, INFECTIOUS_A, 
+                           s.parameters.exposed_risk.v, false, s.iteration)
+    end
+end
+
+function event_infectious_a!(s::Simulation)
+    for a in s.agents
+        advance_infection!(s.rng, a, INFECTIOUS_A, INFECTIOUS_S, 
+                           s.parameters.exposed_risk.v, false, s.iteration)
+    end
+end
+
+function event_infectious_s!(s::Simulation)
+    for a in s.agents
+        advance_infection!(s.rng, a, INFECTIOUS_S, INFECTIOUS_H, 
+                           s.parameters.exposed_risk.v, false, s.iteration)
+    end
+end
+
+function event_infectious_h!(s::Simulation)
+    for a in s.agents
+        advance_infection!(s.rng, a, INFECTIOUS_H, INFECTIOUS_I, 
+                           s.parameters.exposed_risk.v, false, s.iteration)
+    end
+end
+
+function event_infectious_i!(s::Simulation)
+    for a in s.agents
+        advance_infection!(s.rng, a, INFECTIOUS_I, DEAD, 
+                           s.parameters.exposed_risk.v, false, s.iteration)
+    end
+end
+
+function iterate!(s::Simulation)
+    final_iteration = s.iteration + s.parameters.num_iterations - 1
+    for i in s.iteration:final_iteration
+        s.iteration = i
+        stats!(s)
+        report(s)
+        if s.parameters.k_assort.v > 0
+            event_infect_assort!(s)
+        end
+        if s.parameters.k_unassort.v > 0
+            event_infect_unassort!(s)
+        end
+        event_test!(s)
+        if s.parameters.max_isolation > 0.0
+            event_isolate!(s)
+        end
+        if s.parameters.max_isolation > 0.0
+            event_deisolate!(s)
+        end
+        if s.parameters.trace_effective > 0.0
+            event_trace!(s)
+        end
+        event_exposed!(s)
+        event_infectious_a!(s)
+        # why are recovery and death not events? when do these transitions happen?
+    end
+    stats!(s, forced=true)
+    report(s, forced=true)
+end
+
+function simulate!(s::Simulation)
+    init_agents!(s) #forced=true then you can simulate same object again, but counts may be wrong
+    s.iteration = 0
+    iterate!(s)
+end
+
+# Nathan has ~Simulation() that deletes the agents from a Simulation object
+
+function write_csv_header(io::IO=IOContext(stdout, :compact => false))
     # This lock may be unnecessary
     lock(io)
     println(
         io,
-        "id,scenario,jiggle,run,iteration,susceptible,exposed," * 
+        "thread,id,scenario,jiggle,run,iteration,susceptible,exposed," * 
             "asymptomatic,symptomatic,hospital,icu,recover,dead,active," * 
             "total_infected,agents_isolated,isolated,deisolated,traced," * 
             "agents_tested,tested,positives,k,test_infectious_s,mean_test," *
@@ -713,6 +833,12 @@ function write_csv_header(s::Simulation, io::IO=IOContext(stdout, :compact => fa
             "inf_s_risk,min_isolation,max_isolation,trace_effective"
         )
     unlock(io)
+end
+
+# This probably has no purpose here
+function run_one_sim!(s::Simulation)
+    Random.seed!(s.rng, s.parameters.seed)
+    simulate!(s)
 end
 
 function set_jiggles!(rng::Random.AbstractRNG, p::Parameters)
@@ -738,56 +864,79 @@ function set_jiggles!(p::Parameters)
     set_jiggles!(Random.GLOBAL_RNG, p)
 end
 
-###*** Test code ***###
-
-par = set_parameters(default_parameters, initial_infections=107)
-s = Simulation(par)
-init_agents!(s)
-s.iteration = 1
-
-infections = 0
-for a in s.agents
-    infections += (a.health > SUSCEPTIBLE && a.health < RECOVERED)
+function get_jiggles!(from::Parameters, to::Parameters)
+    get!(from.exposed_risk, to.exposed_risk)
+    get!(from.asymptomatic, to.asymptomatic)
+    get!(from.infectious_a_risk, to.infectious_a_risk)
+    get!(from.k_assort, to.k_assort)
+    get!(from.prob_test_susceptible, to.prob_test_susceptible)
+    to.prob_test[SUSCEPTIBLE] = to.prob_test_susceptible.v
+    get!(from.prob_test_exposed, to.prob_test_exposed)
+    to.prob_test[EXPOSED] = to.prob_test_exposed.v
+    get!(from.prob_test_infectious_a, to.prob_test_infectious_a)
+    to.prob_test[INFECTIOUS_A] = to.prob_test_infectious_a.v
+    get!(from.prob_test_infectious_s, to.prob_test_infectious_s)
+    to.prob_test[INFECTIOUS_S] = to.prob_test_infectious_s.v
+    get!(from.prob_test_infectious_s, to.prob_test_infectious_s)
+    to.prob_test[INFECTIOUS_H] = to.prob_test_infectious_h.v
+    get!(from.prob_test_infectious_i, to.prob_test_infectious_i)
+    to.prob_test[INFECTIOUS_I] = to.prob_test_infectious_i.v
+    get!(from.prob_test_recovered, to.prob_test_recovered)
+    to.prob_test[RECOVERED] = to.prob_test_recovered.v
+    get!(from.prob_test_dead, to.prob_test_dead)
+    to.prob_test[DEAD] = to.prob_test_dead.v
+    get!(from.mean_test, to.mean_test)
+    get!(from.min_test, to.min_test)
+    get!(from.isolation_period, to.isolation_period)
+    get!(from.infectious_s_risk, to.infectious_s_risk)
 end
-print(infections)
 
-set_parameters!(par, initial_infections=10)
-s = Simulation(par)
-init_agents!(s)
-infections = 0
-which_infected = Vector{Int64}()
-for a in s.agents
-    infections += (a.health > SUSCEPTIBLE && a.health < RECOVERED)
-    if a.health > SUSCEPTIBLE && a.health < RECOVERED
-        append!(which_infected, a.id)
+function run_simulations(parms::AbstractVector{Parameters})
+    blocklock = SpinLock()
+    id = parms[1].first_id
+    num_jiggles = parms[1].num_jiggles
+    num_runs_per_jiggle = parms[1].num_runs_per_jiggle
+    template_parms = parms[1]
+    
+    global_seed = template_parms.seed
+
+    # I'm confused by the ordering. set_jiggles is run on the template_parms
+    # so if you passsed a vector of parms for scenarios, the jiggling is not
+    # happening for each scenario. What if you are varying the Jiggles across
+    # scenarios?
+    Threads.@threads for i in 1:num_jiggles
+        p = deepcopy(template_parms)
+        set_jiggles!(p)
+        for j in 1:num_runs_per_jiggle
+            for k in 1:length(parms)
+                # there may be a more elegant way to set thread-local seeds
+                if global_seed === nothing
+                    local_seed = nothing
+                else
+                    local_seed = global_seed + Threads.threadid()
+                end
+                local_parms = deepcopy(parms[k])
+                #lock(parms[k])
+                get_jiggles!(p, local_parms)
+                local_parms.jiggle = i
+                local_parms.run = j
+                local_parms.scenario = k
+                lock(blocklock) do
+                    id += 1
+                end
+                local_parms.id = id
+                local_parms.seed = local_seed
+                s = Simulation(local_parms)
+                #unlock(parms[k])
+                simulate!(s)
+            end
+        end
     end
 end
-print(infections)
-print(which_infected)
 
+function run_simulations(parms::Parameters)
+    run_simulations([parms])
+end
 
-
-rng = MersenneTwister(1234)
-p1 = default_parameters
-p2 = set_parameters(p1, first_id = 10)
-set_parameters!(p2, first_id = 1)
-
-j = Jiggle(10, nothing)
-rand(rng, j, 10)
-j = Jiggle(10, 10)
-rand(rng, j, 10)
-j = Jiggle(10, 20)
-rand(rng, j, 10)
-j = Jiggle(10, 9)
-rand(rng, j, 10)
-
-j = Jiggle(10.5, nothing)
-rand(rng, j, 10)
-j = Jiggle(10.5, 10.5)
-rand(rng, j, 10)
-j = Jiggle(10.5, 20.5)
-rand(rng, j, 10)
-j = Jiggle(10.5, 9.5)
-rand(rng, j, 10)
-
-agent = Agent(p1, 0, rng)
+    
+end
