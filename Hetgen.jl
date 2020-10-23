@@ -377,7 +377,8 @@ mutable struct Agent
         risk_infecting_ = Vector{Float64}()
         for (h, r) in p.risk_infecting
             if h > EXPOSED && h < RECOVERED
-                append!(risk_infecting_, rand(rng, Distributions.Exponential(r)))
+                append!(risk_infecting_, 
+                        rand(rng, Distributions.Exponential(r)))
             end
         end
         if p.initial_infections == 0
@@ -404,7 +405,8 @@ mutable struct Agent
             if !recover_before_hospital_
                 recover_before_icu_ = rand_0_1(rng) < p.recover_before_icu
                 if !recover_before_icu_
-                    recover_before_death_ = rand_0_1(rng) < p.recover_before_death
+                    recover_before_death_ = rand_0_1(rng) < 
+                        p.recover_before_death
                 end
             end
         end
@@ -525,7 +527,9 @@ function init_agents!(s::Simulation; forced=false)
     end
     if s.parameters.initial_infections > 0
         # ordered=true is probably unnecessary
-        infect_indices = sample(s.rng, 1:length(s.agents), s.parameters.initial_infections, replace=false, ordered=true)
+        infect_indices = sample(s.rng, 1:length(s.agents), 
+                                s.parameters.initial_infections, 
+                                replace=false, ordered=true)
         for i in infect_indices
             s.agents[i].health = EXPOSED
             infect!(s, s.agents[i])
@@ -547,7 +551,8 @@ function stats!(s::Simulation; forced = false)
     end
 end
 
-function report(s::Simulation, io::IO=IOContext(stdout, :compact => false); forced = false)
+function report(s::Simulation, io::IO=IOContext(stdout, :compact => false); 
+                forced = false)
     if forced || s.iteration % s.parameters.report_frequency == 0
         # array comprehension appears to be slightly faster than looping over
         # all agents once and updating counts with if else statements
@@ -621,9 +626,10 @@ function event_infect_assort!(s::Simulation)
                 if s.agents[j].health > SUSCEPTIBLE
                     continue
                 end
-                risk = min(1.0 - s.agents[i].isolated, 1.0 - s.agents[j].isolated) *
-                    ((s.agents[i].risk_infecting[s.agents[i].health] + s.agents[j].risk_infection) /
-                    2.0)
+                risk = min(1.0 - s.agents[i].isolated, 1.0 - 
+                    s.agents[j].isolated) * 
+                    ((s.agents[i].risk_infecting[s.agents[i].health] + 
+                    s.agents[j].risk_infection) / 2.0)
                 if rand_0_1(s.rng) < risk
                     infected[j] = i
                 end
@@ -710,7 +716,9 @@ function event_trace!(s::Simulation)
                 a.test_result == POSITIVE
             neighbours = Int64(round(s.parameters.k_assort.v / 2.0))
             from = max(1, a.id - neighbours)
-            to = min(a.id + neighbours, length(s.agents)) # i + 1 + neighbors on line 639
+            # i + 1 + neighbors on line 639 WHy? This gets half k_assort on
+            # either side
+            to = min(a.id + neighbours, length(s.agents))
             for i in from:to
                 if i != a.id && s.agents[i].isolated == 0.0 &&
                         s.agents[i].health < RECOVERED
@@ -732,7 +740,8 @@ function event_result!(s::Simulation)
     end
 end
 
-function advance_infection!(rng::Random.AbstractRNG, a::Agent, stage_from::Health, stage_to::Health, 
+function advance_infection!(rng::Random.AbstractRNG, a::Agent, 
+                            stage_from::Health, stage_to::Health, 
                             prob::Float64, recover::Bool, iteration::Integer)
     if a.health == stage_from
         if rand_0_1(rng) < prob
@@ -806,14 +815,17 @@ function iterate!(s::Simulation)
         end
         event_exposed!(s)
         event_infectious_a!(s)
-        # why are recovery and death not events? when do these transitions happen?
+        # why are recovery and death not events? when do these transitions 
+        # happen?
     end
     stats!(s, forced=true)
     report(s, forced=true)
 end
 
 function simulate!(s::Simulation)
-    init_agents!(s) #forced=true then you can simulate same object again, but counts may be wrong
+    # if we use forced=true in the init_agents!() call then you can simulate 
+    # same object again, but counts may be wrong
+    init_agents!(s) 
     s.iteration = 0
     iterate!(s)
 end
