@@ -7,7 +7,7 @@
  *
  * To compile:
  *
- * g++ -Wall -O3  -std=c++11 hetgen.cc -o hetgen -lpthread
+ * g++ -Wall -O3  -std=c++17 hetgen.cc -o hetgen -lpthread
  *
  * All the parameters are in the options variable in the main() function.
  *

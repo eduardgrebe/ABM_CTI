@@ -19,6 +19,7 @@ const TEST_INFECTIOUS_I = 0.0
 const TEST_RECOVERED = 0.0
 const TEST_DEAD = 0.0
 
+# For testing set Jiggles with values Nathan will provide
 par = set_parameters(
     default_parameters,
     num_jiggles = 12,
@@ -52,4 +53,4 @@ par = set_parameters(
     )
 
 write_csv_header()
-@time run_simulations(par)
+run_simulations(par)
