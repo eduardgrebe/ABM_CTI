@@ -341,7 +341,7 @@ const default_parameters = Parameters(
     Jiggle(0.2, nothing),
 )
 
-function set_parameters(parameters; kwargs...)
+function set_parameters(parameters::Parameters; kwargs...)
     p = deepcopy(parameters)
     for (key, value) in Dict(kwargs)
         setfield!(p, key, value)
@@ -349,7 +349,7 @@ function set_parameters(parameters; kwargs...)
     return p
 end
 
-function set_parameters!(parameters; kwargs...)
+function set_parameters!(parameters::Parameters; kwargs...)
     for (key, value) in Dict(kwargs)
         setfield!(parameters, key, value)
     end
