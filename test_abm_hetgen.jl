@@ -1,4 +1,4 @@
-push!(LOAD_PATH, "/Users/eduard/dev/ABM_CTI/")
+push!(LOAD_PATH, "./")
 using Hetgen
 
 const POS_SUSCEPTIBLE = 0.001
